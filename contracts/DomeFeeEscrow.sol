@@ -178,6 +178,13 @@ contract DomeFeeEscrow is
     // Constructor
     // ────────────────────────────────────────────────────────────────────────
     
+    /**
+     * @notice Initialize the escrow contract
+     * @dev Sets up EIP-712 domain separator and grants all roles to deployer
+     *      Deployer should transfer ADMIN_ROLE to a multi-sig after setup
+     * @param tokenAddress USDC token address
+     * @param _domeWallet Wallet address to receive Dome's share of fees
+     */
     constructor(
         address tokenAddress,
         address _domeWallet
@@ -670,13 +677,6 @@ contract DomeFeeEscrow is
     }
 
     /**
-     * @notice Check if address is a smart wallet (contract)
-     */
-    function isSmartWallet(address account) external view returns (bool) {
-        return account.code.length > 0;
-    }
-
-    /**
      * @notice Calculate fees for given order size
      * @param orderSize Order size in USDC (6 decimals)
      * @param clientFeeBps Client fee rate in basis points
@@ -703,24 +703,6 @@ contract DomeFeeEscrow is
         return _domainSeparatorV4();
     }
 
-    /**
-     * @notice Build the hash that smart wallets need to sign
-     */
-    function buildAuthHash(
-        bytes32 orderId,
-        address payer,
-        uint256 amount,
-        uint256 deadline
-    ) external view returns (bytes32) {
-        bytes32 structHash = keccak256(abi.encode(
-            FEE_AUTH_TYPEHASH,
-            orderId,
-            payer,
-            amount,
-            deadline
-        ));
-        return _hashTypedDataV4(structHash);
-    }
 
     // ────────────────────────────────────────────────────────────────────────
     // Internal Helpers
