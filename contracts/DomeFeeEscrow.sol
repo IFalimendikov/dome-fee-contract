@@ -715,10 +715,8 @@ contract DomeFeeEscrow is
         uint256 deadline,
         bytes calldata signature
     ) internal {
-        // Split signature into v, r, s for permit
         (uint8 v, bytes32 r, bytes32 s) = _splitSignature(signature);
         
-        // Execute permit - sets allowance for this contract
         IERC20Permit(address(TOKEN)).permit(
             payer,
             address(this),
@@ -770,7 +768,6 @@ contract DomeFeeEscrow is
         s = bytes32(sig[32:64]);
         v = uint8(sig[64]);
         
-        // Handle both 0/1 and 27/28 formats
         if (v < 27) v += 27;
     }
 }

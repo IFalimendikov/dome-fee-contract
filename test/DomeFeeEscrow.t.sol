@@ -89,22 +89,16 @@ contract DomeFeeEscrowTest is Test {
     event MinDomeFeeSet(uint256 oldMin, uint256 newMin);
 
     function setUp() public {
-        // Derive EOA address from private key
         userEoa = vm.addr(userPrivateKey);
-
-        // Deploy mock USDC
         usdc = new MockUSDC();
 
-        // Deploy escrow as admin
         vm.prank(admin);
         escrow = new DomeFeeEscrow(address(usdc), domeWallet);
 
-        // Grant operator role
         vm.prank(admin);
         escrow.addOperator(operator);
 
-        // Mint USDC to users
-        usdc.mint(user, 10_000_000_000); // $10,000
+        usdc.mint(user, 10_000_000_000);
         usdc.mint(userEoa, 10_000_000_000);
     }
 
@@ -115,8 +109,8 @@ contract DomeFeeEscrowTest is Test {
     function test_Constructor() public view {
         assertEq(address(escrow.TOKEN()), address(usdc));
         assertEq(escrow.domeWallet(), domeWallet);
-        assertEq(escrow.domeFeeBps(), 10); // 0.1%
-        assertEq(escrow.minDomeFee(), 10_000); // $0.01
+        assertEq(escrow.domeFeeBps(), 10);
+        assertEq(escrow.minDomeFee(), 10_000);
     }
 
     function test_Constructor_RevertZeroToken() public {
@@ -134,16 +128,11 @@ contract DomeFeeEscrowTest is Test {
     // ═══════════════════════════════════════════════════════════════════════
 
     function test_PullFee_SmartWallet() public {
-        // Setup: user approves escrow
         vm.prank(user);
         usdc.approve(address(escrow), type(uint256).max);
 
-        // Create mock signature (will use code path but skip sig check for this test)
         bytes memory signature = new bytes(65);
         uint256 deadline = block.timestamp + 1 hours;
-
-        // This test simulates smart wallet - in practice would need proper EIP-1271
-        // For now testing the basic flow with pre-approved allowance
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -151,8 +140,7 @@ contract DomeFeeEscrowTest is Test {
     // ═══════════════════════════════════════════════════════════════════════
 
     function test_Distribute_Full() public {
-        // Setup escrow with pre-approved user
-        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000); // 0.10 dome, 0.05 client
+        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
 
         uint256 domeBefore = usdc.balanceOf(domeWallet);
         uint256 clientBefore = usdc.balanceOf(client);
@@ -171,10 +159,8 @@ contract DomeFeeEscrowTest is Test {
         vm.prank(operator);
         escrow.distribute(ORDER_ID, 50_000, 25_000);
 
-        // Still held
         assertEq(uint256(escrow.states(ORDER_ID)), uint256(DomeFeeEscrow.HoldState.HELD));
 
-        // Distribute rest
         vm.prank(operator);
         escrow.distribute(ORDER_ID, 50_000, 25_000);
 
@@ -214,17 +200,15 @@ contract DomeFeeEscrowTest is Test {
     function test_Refund_PartiallyDistributed() public {
         _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
 
-        // Distribute half
         vm.prank(operator);
         escrow.distribute(ORDER_ID, 50_000, 25_000);
 
         uint256 userBefore = usdc.balanceOf(user);
 
-        // Refund remainder
         vm.prank(operator);
         escrow.refund(ORDER_ID);
 
-        assertEq(usdc.balanceOf(user), userBefore + 75_000); // 50k dome + 25k client remaining
+        assertEq(usdc.balanceOf(user), userBefore + 75_000);
         assertEq(uint256(escrow.states(ORDER_ID)), uint256(DomeFeeEscrow.HoldState.REFUNDED));
     }
 
@@ -235,7 +219,6 @@ contract DomeFeeEscrowTest is Test {
     function test_Claim_AfterTimeout() public {
         _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
 
-        // Fast forward past timeout
         vm.warp(block.timestamp + 14 days + 1);
 
         uint256 userBefore = usdc.balanceOf(user);
@@ -251,7 +234,7 @@ contract DomeFeeEscrowTest is Test {
         _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
 
         vm.prank(user);
-        vm.expectRevert(); // NotYetClaimable
+        vm.expectRevert();
         escrow.claim(ORDER_ID);
     }
 
@@ -392,13 +375,10 @@ contract DomeFeeEscrowTest is Test {
     }
 
     function test_RescueTokens_ExcessUSDC() public {
-        // Setup held order
         _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
 
-        // Send extra USDC directly
         usdc.mint(address(escrow), 500_000);
 
-        // Can only rescue excess
         vm.prank(admin);
         escrow.rescueTokens(address(usdc), admin, 500_000);
 
@@ -510,40 +490,28 @@ contract DomeFeeEscrowTest is Test {
     ) internal {
         uint256 total = domeFee + clientFee;
 
-        // Transfer tokens from payer to escrow
         vm.prank(payer);
         usdc.approve(address(escrow), total);
         vm.prank(payer);
         bool success = usdc.transfer(address(escrow), total);
         require(success, "Transfer failed");
 
-        // Use storage slots to setup escrow data
-        // This simulates what pullFee does
         vm.store(
             address(escrow),
-            keccak256(abi.encode(orderId, uint256(7))), // states mapping slot
-            bytes32(uint256(1)) // HELD
+            keccak256(abi.encode(orderId, uint256(7))),
+            bytes32(uint256(1))
         );
 
-        // Store escrow data (slot 6 for escrows mapping)
         bytes32 escrowSlot = keccak256(abi.encode(orderId, uint256(6)));
         
-        // payer
         vm.store(address(escrow), escrowSlot, bytes32(uint256(uint160(payer))));
-        // client
         vm.store(address(escrow), bytes32(uint256(escrowSlot) + 1), bytes32(uint256(uint160(client))));
-        // domeFee
         vm.store(address(escrow), bytes32(uint256(escrowSlot) + 2), bytes32(domeFee));
-        // clientFee
         vm.store(address(escrow), bytes32(uint256(escrowSlot) + 3), bytes32(clientFee));
-        // domeDistributed = 0
         vm.store(address(escrow), bytes32(uint256(escrowSlot) + 4), bytes32(uint256(0)));
-        // clientDistributed = 0
         vm.store(address(escrow), bytes32(uint256(escrowSlot) + 5), bytes32(uint256(0)));
-        // timestamp
         vm.store(address(escrow), bytes32(uint256(escrowSlot) + 6), bytes32(block.timestamp));
 
-        // Update totalHeld (slot 8)
         uint256 currentHeld = uint256(vm.load(address(escrow), bytes32(uint256(8))));
         vm.store(address(escrow), bytes32(uint256(8)), bytes32(currentHeld + total));
     }
@@ -561,7 +529,6 @@ contract DomeFeeEscrowTest is Test {
         uint256 domeDistribute,
         uint256 clientDistribute
     ) public {
-        // Bound inputs to reasonable ranges (1 cent to $10k)
         domeFee = bound(domeFee, 10_000, 10_000_000_000);
         clientFee = bound(clientFee, 0, 10_000_000_000);
         domeDistribute = bound(domeDistribute, 0, domeFee);
@@ -569,7 +536,6 @@ contract DomeFeeEscrowTest is Test {
 
         bytes32 orderId = keccak256(abi.encode("fuzz-order", domeFee, clientFee));
         
-        // Mint enough to user
         usdc.mint(user, domeFee + clientFee);
         
         _setupHeldOrder(orderId, user, domeFee, clientFee);
@@ -580,7 +546,6 @@ contract DomeFeeEscrowTest is Test {
         vm.prank(operator);
         escrow.distribute(orderId, domeDistribute, clientDistribute);
 
-        // Verify balances increased by exact amounts
         assertEq(usdc.balanceOf(domeWallet), domeWalletBefore + domeDistribute);
         assertEq(usdc.balanceOf(client), clientBefore + clientDistribute);
     }
@@ -593,7 +558,6 @@ contract DomeFeeEscrowTest is Test {
         uint256 clientFee,
         uint8 numDistributions
     ) public {
-        // Bound inputs
         domeFee = bound(domeFee, 100_000, 1_000_000_000);
         clientFee = bound(clientFee, 100_000, 1_000_000_000);
         numDistributions = uint8(bound(numDistributions, 1, 10));
@@ -610,11 +574,9 @@ contract DomeFeeEscrowTest is Test {
             vm.prank(operator);
             escrow.distribute(orderId, domePerDistribution, clientPerDistribution);
             
-            // Should still be HELD
             assertEq(uint256(escrow.states(orderId)), uint256(DomeFeeEscrow.HoldState.HELD));
         }
 
-        // Distribute remaining
         (,,,,uint256 domeDistributed, uint256 clientDistributed,,,,,) = escrow.getEscrowStatus(orderId);
         uint256 domeRemaining = domeFee - domeDistributed;
         uint256 clientRemaining = clientFee - clientDistributed;
@@ -622,7 +584,6 @@ contract DomeFeeEscrowTest is Test {
         vm.prank(operator);
         escrow.distribute(orderId, domeRemaining, clientRemaining);
 
-        // Now should be SENT
         assertEq(uint256(escrow.states(orderId)), uint256(DomeFeeEscrow.HoldState.SENT));
     }
 
@@ -635,10 +596,9 @@ contract DomeFeeEscrowTest is Test {
         uint256 domeDistributed,
         uint256 clientDistributed
     ) public {
-        // Bound inputs
         domeFee = bound(domeFee, 10_000, 1_000_000_000);
         clientFee = bound(clientFee, 0, 1_000_000_000);
-        domeDistributed = bound(domeDistributed, 0, domeFee - 1); // Leave at least 1 for refund
+        domeDistributed = bound(domeDistributed, 0, domeFee - 1);
         clientDistributed = bound(clientDistributed, 0, clientFee);
 
         bytes32 orderId = keccak256(abi.encode("fuzz-refund", domeFee, clientFee, domeDistributed));
@@ -646,7 +606,6 @@ contract DomeFeeEscrowTest is Test {
         usdc.mint(user, domeFee + clientFee);
         _setupHeldOrder(orderId, user, domeFee, clientFee);
 
-        // Distribute partial
         if (domeDistributed > 0 || clientDistributed > 0) {
             vm.prank(operator);
             escrow.distribute(orderId, domeDistributed, clientDistributed);
@@ -666,7 +625,6 @@ contract DomeFeeEscrowTest is Test {
      * @notice Fuzz test: fee calculation with various order sizes
      */
     function testFuzz_FeeCalculation(uint256 orderSize) public view {
-        // Bound to reasonable order sizes ($1 to $100M)
         orderSize = bound(orderSize, 1_000_000, 100_000_000_000_000);
 
         uint256 expectedDomeFee = (orderSize * escrow.domeFeeBps()) / 10000;
@@ -676,11 +634,9 @@ contract DomeFeeEscrowTest is Test {
             expectedDomeFee = minFee;
         }
 
-        // Verify fee is at least minimum
         assertTrue(expectedDomeFee >= minFee);
         
-        // Verify fee is proportional for large orders
-        if (orderSize >= 100_000_000) { // $100+
+        if (orderSize >= 100_000_000) {
             assertTrue(expectedDomeFee >= minFee);
         }
     }
@@ -753,8 +709,7 @@ contract DomeFeeEscrowTest is Test {
      * @notice Fuzz test: admin fee configuration
      */
     function testFuzz_SetDomeFeeBps(uint256 newBps) public {
-        // Bound to prevent overflow in fee calculation
-        newBps = bound(newBps, 0, 10000); // 0% to 100%
+        newBps = bound(newBps, 0, 10000);
 
         vm.prank(admin);
         escrow.setDomeFeeBps(newBps);
@@ -766,8 +721,7 @@ contract DomeFeeEscrowTest is Test {
      * @notice Fuzz test: minimum fee setting
      */
     function testFuzz_SetMinDomeFee(uint256 newMin) public {
-        // Bound to reasonable values
-        newMin = bound(newMin, 0, 1_000_000_000); // 0 to $1000
+        newMin = bound(newMin, 0, 1_000_000_000);
 
         vm.prank(admin);
         escrow.setMinDomeFee(newMin);
