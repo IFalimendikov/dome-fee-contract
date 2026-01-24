@@ -179,10 +179,26 @@ function refundBatch(bytes32[] calldata orderIds) external
 ### View Functions
 
 ```solidity
+// Get full escrow status for an order
 function getEscrowStatus(bytes32 orderId) external view returns (...)
+
+// Check if order can be claimed by user after timeout
 function isClaimable(bytes32 orderId) external view returns (bool)
+
+// Check if address is a smart wallet (contract)
 function isSmartWallet(address account) external view returns (bool)
+
+// Build the hash that smart wallets need to sign
 function buildAuthHash(...) external view returns (bytes32)
+
+// Calculate fees for given order size (useful for frontend preview)
+function calculateFee(
+    uint256 orderSize,
+    uint256 clientFeeBps
+) external view returns (uint256 domeFee, uint256 clientFee, uint256 totalFee)
+
+// Get EIP-712 domain separator
+function DOMAIN_SEPARATOR() external view returns (bytes32)
 ```
 
 ## Configuration
@@ -205,9 +221,6 @@ function buildAuthHash(...) external view returns (bytes32)
 | `OPERATOR_ROLE` | pullFee, distribute, refund |
 
 ## Security
-
-### Audits
-- [ ] Pending audit
 
 ### Security Features
 - ReentrancyGuard protection
