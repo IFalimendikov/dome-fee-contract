@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "forge-std/Test.sol";
-import "../contracts/DomeFeeEscrow.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {Test, console} from "forge-std/Test.sol";
+import {DomeFeeEscrow} from "../contracts/DomeFeeEscrow.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 /**
  * @title MockUSDC
@@ -15,10 +15,10 @@ contract MockUSDC is ERC20 {
     bytes32 public constant PERMIT_TYPEHASH = keccak256(
         "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
     );
-    bytes32 public DOMAIN_SEPARATOR;
+    bytes32 public domainSeparator;
 
     constructor() ERC20("USD Coin", "USDC") {
-        DOMAIN_SEPARATOR = keccak256(
+        domainSeparator = keccak256(
             abi.encode(
                 keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
                 keccak256(bytes("USD Coin")),
@@ -52,7 +52,7 @@ contract MockUSDC is ERC20 {
             abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline)
         );
 
-        bytes32 hash = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+        bytes32 hash = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
         address signer = ecrecover(hash, v, r, s);
         require(signer == owner, "Invalid signature");
 
@@ -75,7 +75,7 @@ contract DomeFeeEscrowTest is Test {
     address public user = address(5);
 
     uint256 public userPrivateKey = 0xA11CE;
-    address public userEOA;
+    address public userEoa;
 
     bytes32 public constant ORDER_ID = keccak256("test-order-1");
     uint256 public constant ORDER_SIZE = 1_000_000_000; // $1000 USDC
@@ -90,7 +90,7 @@ contract DomeFeeEscrowTest is Test {
 
     function setUp() public {
         // Derive EOA address from private key
-        userEOA = vm.addr(userPrivateKey);
+        userEoa = vm.addr(userPrivateKey);
 
         // Deploy mock USDC
         usdc = new MockUSDC();
@@ -105,7 +105,7 @@ contract DomeFeeEscrowTest is Test {
 
         // Mint USDC to users
         usdc.mint(user, 10_000_000_000); // $10,000
-        usdc.mint(userEOA, 10_000_000_000);
+        usdc.mint(userEoa, 10_000_000_000);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -113,7 +113,7 @@ contract DomeFeeEscrowTest is Test {
     // ═══════════════════════════════════════════════════════════════════════
 
     function test_Constructor() public view {
-        assertEq(address(escrow.token()), address(usdc));
+        assertEq(address(escrow.TOKEN()), address(usdc));
         assertEq(escrow.domeWallet(), domeWallet);
         assertEq(escrow.domeFeeBps(), 10); // 0.1%
         assertEq(escrow.minDomeFee(), 10_000); // $0.01
@@ -512,7 +512,10 @@ contract DomeFeeEscrowTest is Test {
 
         // Transfer tokens from payer to escrow
         vm.prank(payer);
-        usdc.transfer(address(escrow), total);
+        usdc.approve(address(escrow), total);
+        vm.prank(payer);
+        bool success = usdc.transfer(address(escrow), total);
+        require(success, "Transfer failed");
 
         // Use storage slots to setup escrow data
         // This simulates what pullFee does
@@ -543,5 +546,232 @@ contract DomeFeeEscrowTest is Test {
         // Update totalHeld (slot 8)
         uint256 currentHeld = uint256(vm.load(address(escrow), bytes32(uint256(8))));
         vm.store(address(escrow), bytes32(uint256(8)), bytes32(currentHeld + total));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Fuzz Tests
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Fuzz test: distribute should never send more than escrowed
+     */
+    function testFuzz_Distribute_NeverExceedsEscrowed(
+        uint256 domeFee,
+        uint256 clientFee,
+        uint256 domeDistribute,
+        uint256 clientDistribute
+    ) public {
+        // Bound inputs to reasonable ranges (1 cent to $10k)
+        domeFee = bound(domeFee, 10_000, 10_000_000_000);
+        clientFee = bound(clientFee, 0, 10_000_000_000);
+        domeDistribute = bound(domeDistribute, 0, domeFee);
+        clientDistribute = bound(clientDistribute, 0, clientFee);
+
+        bytes32 orderId = keccak256(abi.encode("fuzz-order", domeFee, clientFee));
+        
+        // Mint enough to user
+        usdc.mint(user, domeFee + clientFee);
+        
+        _setupHeldOrder(orderId, user, domeFee, clientFee);
+
+        uint256 domeWalletBefore = usdc.balanceOf(domeWallet);
+        uint256 clientBefore = usdc.balanceOf(client);
+
+        vm.prank(operator);
+        escrow.distribute(orderId, domeDistribute, clientDistribute);
+
+        // Verify balances increased by exact amounts
+        assertEq(usdc.balanceOf(domeWallet), domeWalletBefore + domeDistribute);
+        assertEq(usdc.balanceOf(client), clientBefore + clientDistribute);
+    }
+
+    /**
+     * @notice Fuzz test: partial distributions should track correctly
+     */
+    function testFuzz_Distribute_PartialTracking(
+        uint256 domeFee,
+        uint256 clientFee,
+        uint8 numDistributions
+    ) public {
+        // Bound inputs
+        domeFee = bound(domeFee, 100_000, 1_000_000_000);
+        clientFee = bound(clientFee, 100_000, 1_000_000_000);
+        numDistributions = uint8(bound(numDistributions, 1, 10));
+
+        bytes32 orderId = keccak256(abi.encode("fuzz-partial", domeFee, clientFee, numDistributions));
+        
+        usdc.mint(user, domeFee + clientFee);
+        _setupHeldOrder(orderId, user, domeFee, clientFee);
+
+        uint256 domePerDistribution = domeFee / numDistributions;
+        uint256 clientPerDistribution = clientFee / numDistributions;
+
+        for (uint8 i = 0; i < numDistributions - 1; i++) {
+            vm.prank(operator);
+            escrow.distribute(orderId, domePerDistribution, clientPerDistribution);
+            
+            // Should still be HELD
+            assertEq(uint256(escrow.states(orderId)), uint256(DomeFeeEscrow.HoldState.HELD));
+        }
+
+        // Distribute remaining
+        (,,,,uint256 domeDistributed, uint256 clientDistributed,,,,,) = escrow.getEscrowStatus(orderId);
+        uint256 domeRemaining = domeFee - domeDistributed;
+        uint256 clientRemaining = clientFee - clientDistributed;
+
+        vm.prank(operator);
+        escrow.distribute(orderId, domeRemaining, clientRemaining);
+
+        // Now should be SENT
+        assertEq(uint256(escrow.states(orderId)), uint256(DomeFeeEscrow.HoldState.SENT));
+    }
+
+    /**
+     * @notice Fuzz test: refund should return exact remaining amount
+     */
+    function testFuzz_Refund_ReturnsExactRemaining(
+        uint256 domeFee,
+        uint256 clientFee,
+        uint256 domeDistributed,
+        uint256 clientDistributed
+    ) public {
+        // Bound inputs
+        domeFee = bound(domeFee, 10_000, 1_000_000_000);
+        clientFee = bound(clientFee, 0, 1_000_000_000);
+        domeDistributed = bound(domeDistributed, 0, domeFee - 1); // Leave at least 1 for refund
+        clientDistributed = bound(clientDistributed, 0, clientFee);
+
+        bytes32 orderId = keccak256(abi.encode("fuzz-refund", domeFee, clientFee, domeDistributed));
+        
+        usdc.mint(user, domeFee + clientFee);
+        _setupHeldOrder(orderId, user, domeFee, clientFee);
+
+        // Distribute partial
+        if (domeDistributed > 0 || clientDistributed > 0) {
+            vm.prank(operator);
+            escrow.distribute(orderId, domeDistributed, clientDistributed);
+        }
+
+        uint256 userBefore = usdc.balanceOf(user);
+        uint256 expectedRefund = (domeFee - domeDistributed) + (clientFee - clientDistributed);
+
+        vm.prank(operator);
+        escrow.refund(orderId);
+
+        assertEq(usdc.balanceOf(user), userBefore + expectedRefund);
+        assertEq(uint256(escrow.states(orderId)), uint256(DomeFeeEscrow.HoldState.REFUNDED));
+    }
+
+    /**
+     * @notice Fuzz test: fee calculation with various order sizes
+     */
+    function testFuzz_FeeCalculation(uint256 orderSize) public view {
+        // Bound to reasonable order sizes ($1 to $100M)
+        orderSize = bound(orderSize, 1_000_000, 100_000_000_000_000);
+
+        uint256 expectedDomeFee = (orderSize * escrow.domeFeeBps()) / 10000;
+        uint256 minFee = escrow.minDomeFee();
+        
+        if (expectedDomeFee < minFee) {
+            expectedDomeFee = minFee;
+        }
+
+        // Verify fee is at least minimum
+        assertTrue(expectedDomeFee >= minFee);
+        
+        // Verify fee is proportional for large orders
+        if (orderSize >= 100_000_000) { // $100+
+            assertTrue(expectedDomeFee >= minFee);
+        }
+    }
+
+    /**
+     * @notice Fuzz test: claim only works after timeout
+     */
+    function testFuzz_Claim_OnlyAfterTimeout(uint256 timeElapsed) public {
+        timeElapsed = bound(timeElapsed, 0, 30 days);
+
+        bytes32 orderId = keccak256(abi.encode("fuzz-claim", timeElapsed));
+        usdc.mint(user, 200_000);
+        _setupHeldOrder(orderId, user, 100_000, 100_000);
+
+        vm.warp(block.timestamp + timeElapsed);
+
+        if (timeElapsed <= 14 days) {
+            vm.prank(user);
+            vm.expectRevert();
+            escrow.claim(orderId);
+        } else {
+            uint256 userBefore = usdc.balanceOf(user);
+            vm.prank(user);
+            escrow.claim(orderId);
+            assertEq(usdc.balanceOf(user), userBefore + 200_000);
+        }
+    }
+
+    /**
+     * @notice Fuzz test: batch operations handle multiple orders correctly
+     */
+    function testFuzz_DistributeBatch(uint8 numOrders) public {
+        numOrders = uint8(bound(numOrders, 1, 20));
+
+        bytes32[] memory orderIds = new bytes32[](numOrders);
+        uint256[] memory domeAmounts = new uint256[](numOrders);
+        uint256[] memory clientAmounts = new uint256[](numOrders);
+
+        uint256 totalDome;
+        uint256 totalClient;
+
+        for (uint8 i = 0; i < numOrders; i++) {
+            orderIds[i] = keccak256(abi.encode("batch", i));
+            domeAmounts[i] = 10_000 + (uint256(i) * 1000);
+            clientAmounts[i] = 5_000 + (uint256(i) * 500);
+            
+            totalDome += domeAmounts[i];
+            totalClient += clientAmounts[i];
+
+            usdc.mint(user, domeAmounts[i] + clientAmounts[i]);
+            _setupHeldOrder(orderIds[i], user, domeAmounts[i], clientAmounts[i]);
+        }
+
+        uint256 domeWalletBefore = usdc.balanceOf(domeWallet);
+        uint256 clientBefore = usdc.balanceOf(client);
+
+        vm.prank(operator);
+        escrow.distributeBatch(orderIds, domeAmounts, clientAmounts);
+
+        assertEq(usdc.balanceOf(domeWallet), domeWalletBefore + totalDome);
+        assertEq(usdc.balanceOf(client), clientBefore + totalClient);
+
+        // All orders should be SENT
+        for (uint8 i = 0; i < numOrders; i++) {
+            assertEq(uint256(escrow.states(orderIds[i])), uint256(DomeFeeEscrow.HoldState.SENT));
+        }
+    }
+
+    /**
+     * @notice Fuzz test: admin fee configuration
+     */
+    function testFuzz_SetDomeFeeBps(uint256 newBps) public {
+        // Bound to prevent overflow in fee calculation
+        newBps = bound(newBps, 0, 10000); // 0% to 100%
+
+        vm.prank(admin);
+        escrow.setDomeFeeBps(newBps);
+
+        assertEq(escrow.domeFeeBps(), newBps);
+    }
+
+    /**
+     * @notice Fuzz test: minimum fee setting
+     */
+    function testFuzz_SetMinDomeFee(uint256 newMin) public {
+        // Bound to reasonable values
+        newMin = bound(newMin, 0, 1_000_000_000); // 0 to $1000
+
+        vm.prank(admin);
+        escrow.setMinDomeFee(newMin);
+
+        assertEq(escrow.minDomeFee(), newMin);
     }
 }

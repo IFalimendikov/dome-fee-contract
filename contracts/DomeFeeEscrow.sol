@@ -46,14 +46,14 @@ pragma solidity ^0.8.24;
     ════════════════════════════════════════════════════════════════════════════════
 */
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
-import "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 
 contract DomeFeeEscrow is 
     EIP712,
@@ -154,7 +154,7 @@ contract DomeFeeEscrow is
     // ────────────────────────────────────────────────────────────────────────
 
     /// @notice USDC token contract (immutable)
-    IERC20 public immutable token;
+    IERC20 public immutable TOKEN;
     
     /// @notice Dome wallet to receive Dome's share
     address public domeWallet;
@@ -185,7 +185,7 @@ contract DomeFeeEscrow is
         if (tokenAddress == address(0)) revert ZeroAddress();
         if (_domeWallet == address(0)) revert ZeroAddress();
         
-        token = IERC20(tokenAddress);
+        TOKEN = IERC20(tokenAddress);
         domeWallet = _domeWallet;
         domeFeeBps = DEFAULT_DOME_FEE_BPS;
         minDomeFee = DEFAULT_MIN_DOME_FEE;
@@ -200,13 +200,21 @@ contract DomeFeeEscrow is
     // ────────────────────────────────────────────────────────────────────────
 
     modifier requireHeld(bytes32 orderId) {
-        if (states[orderId] != HoldState.HELD) revert NotHeld(orderId);
+        _requireHeld(orderId);
         _;
     }
     
     modifier requireNew(bytes32 orderId) {
-        if (states[orderId] != HoldState.EMPTY) revert OrderExists(orderId);
+        _requireNew(orderId);
         _;
+    }
+
+    function _requireHeld(bytes32 orderId) internal view {
+        if (states[orderId] != HoldState.HELD) revert NotHeld(orderId);
+    }
+
+    function _requireNew(bytes32 orderId) internal view {
+        if (states[orderId] != HoldState.EMPTY) revert OrderExists(orderId);
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -259,14 +267,14 @@ contract DomeFeeEscrow is
         uint256 totalAmount = domeFee + clientFee;
         if (totalAmount == 0) revert ZeroAmount();
 
-        bool isSmartWallet = _isContract(payer);
+        bool isContract = payer.code.length > 0;
 
-        if (isSmartWallet) {
+        if (isContract) {
             // Smart Wallet: verify EIP-1271 signature + use existing allowance
             _handleSmartWallet(orderId, payer, totalAmount, deadline, signature);
         } else {
             // EOA: use EIP-2612 permit (gasless)
-            _handleEOA(payer, totalAmount, deadline, signature);
+            _handleEoa(payer, totalAmount, deadline, signature);
         }
 
         // Store escrow data
@@ -283,9 +291,9 @@ contract DomeFeeEscrow is
         totalHeld += totalAmount;
 
         // Transfer tokens from payer to escrow
-        token.safeTransferFrom(payer, address(this), totalAmount);
+        TOKEN.safeTransferFrom(payer, address(this), totalAmount);
         
-        emit FeeHeld(orderId, payer, client, totalAmount, domeFee, clientFee, isSmartWallet);
+        emit FeeHeld(orderId, payer, client, totalAmount, domeFee, clientFee, isContract);
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -332,15 +340,15 @@ contract DomeFeeEscrow is
 
         // Transfer to Dome
         if (domeAmount > 0) {
-            token.safeTransfer(domeWallet, domeAmount);
+            TOKEN.safeTransfer(domeWallet, domeAmount);
         }
 
         // Transfer to client (or Dome if no client)
         if (clientAmount > 0) {
             if (data.client != address(0)) {
-                token.safeTransfer(data.client, clientAmount);
+                TOKEN.safeTransfer(data.client, clientAmount);
             } else {
-                token.safeTransfer(domeWallet, clientAmount);
+                TOKEN.safeTransfer(domeWallet, clientAmount);
             }
         }
 
@@ -369,7 +377,7 @@ contract DomeFeeEscrow is
         totalHeld -= totalRemaining;
         
         if (totalRemaining > 0) {
-            token.safeTransfer(data.payer, totalRemaining);
+            TOKEN.safeTransfer(data.payer, totalRemaining);
         }
         
         emit FeeReturned(orderId, data.payer, totalRemaining);
@@ -426,14 +434,14 @@ contract DomeFeeEscrow is
             }
 
             if (domeAmount > 0) {
-                token.safeTransfer(domeWallet, domeAmount);
+                TOKEN.safeTransfer(domeWallet, domeAmount);
             }
 
             if (clientAmount > 0) {
                 if (data.client != address(0)) {
-                    token.safeTransfer(data.client, clientAmount);
+                    TOKEN.safeTransfer(data.client, clientAmount);
                 } else {
-                    token.safeTransfer(domeWallet, clientAmount);
+                    TOKEN.safeTransfer(domeWallet, clientAmount);
                 }
             }
 
@@ -466,7 +474,7 @@ contract DomeFeeEscrow is
             totalHeld -= totalRemaining;
             
             if (totalRemaining > 0) {
-                token.safeTransfer(data.payer, totalRemaining);
+                TOKEN.safeTransfer(data.payer, totalRemaining);
             }
             
             emit FeeReturned(orderId, data.payer, totalRemaining);
@@ -503,7 +511,7 @@ contract DomeFeeEscrow is
         totalHeld -= totalRemaining;
         
         if (totalRemaining > 0) {
-            token.safeTransfer(msg.sender, totalRemaining);
+            TOKEN.safeTransfer(msg.sender, totalRemaining);
         }
         
         emit PayerClaimed(orderId, msg.sender, totalRemaining);
@@ -583,9 +591,9 @@ contract DomeFeeEscrow is
         
         IERC20 rescueToken = IERC20(tokenAddress);
         
-        if (tokenAddress == address(token)) {
+        if (tokenAddress == address(TOKEN)) {
             // For USDC: only allow withdrawing excess above totalHeld
-            uint256 balance = token.balanceOf(address(this));
+            uint256 balance = TOKEN.balanceOf(address(this));
             uint256 excess = balance > totalHeld ? balance - totalHeld : 0;
             if (amount > excess) revert ExceedsExcessBalance(amount, excess);
         }
@@ -665,7 +673,7 @@ contract DomeFeeEscrow is
      * @notice Check if address is a smart wallet (contract)
      */
     function isSmartWallet(address account) external view returns (bool) {
-        return _isContract(account);
+        return account.code.length > 0;
     }
 
     /**
@@ -701,7 +709,7 @@ contract DomeFeeEscrow is
     /**
      * @dev Handle EOA wallet using EIP-2612 permit
      */
-    function _handleEOA(
+    function _handleEoa(
         address payer,
         uint256 amount,
         uint256 deadline,
@@ -711,7 +719,7 @@ contract DomeFeeEscrow is
         (uint8 v, bytes32 r, bytes32 s) = _splitSignature(signature);
         
         // Execute permit - sets allowance for this contract
-        IERC20Permit(address(token)).permit(
+        IERC20Permit(address(TOKEN)).permit(
             payer,
             address(this),
             amount,
@@ -746,17 +754,10 @@ contract DomeFeeEscrow is
         }
 
         // Verify allowance exists (Safe must have called approve() beforehand)
-        uint256 allowance = token.allowance(payer, address(this));
+        uint256 allowance = TOKEN.allowance(payer, address(this));
         if (allowance < amount) {
             revert InsufficientAllowance(amount, allowance);
         }
-    }
-
-    /**
-     * @dev Check if address is a contract
-     */
-    function _isContract(address account) internal view returns (bool) {
-        return account.code.length > 0;
     }
 
     /**
