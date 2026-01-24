@@ -677,6 +677,26 @@ contract DomeFeeEscrow is
     }
 
     /**
+     * @notice Calculate fees for given order size
+     * @param orderSize Order size in USDC (6 decimals)
+     * @param clientFeeBps Client fee rate in basis points
+     * @return domeFee Calculated dome fee (with minDomeFee floor applied)
+     * @return clientFee Calculated client fee
+     * @return totalFee Total fee (dome + client)
+     */
+    function calculateFee(
+        uint256 orderSize,
+        uint256 clientFeeBps
+    ) external view returns (uint256 domeFee, uint256 clientFee, uint256 totalFee) {
+        domeFee = (orderSize * domeFeeBps) / 10000;
+        if (domeFee < minDomeFee) {
+            domeFee = minDomeFee;
+        }
+        clientFee = (orderSize * clientFeeBps) / 10000;
+        totalFee = domeFee + clientFee;
+    }
+
+    /**
      * @notice Get EIP-712 domain separator
      */
     function DOMAIN_SEPARATOR() external view returns (bytes32) {

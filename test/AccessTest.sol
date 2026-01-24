@@ -315,4 +315,244 @@ contract AccessTest is DomeFeeEscrowTest {
         vm.expectRevert();
         escrow.distribute(orderId, 0, overClient);
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Additional Security Tests - Edge Cases
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function test_Attack_ClientFeeTooHigh() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        uint256 orderSize = 1_000_000_000;
+        uint256 invalidClientFeeBps = 10001;
+        
+        bytes memory sig = _createPermitSignature(userEoa, address(escrow), escrow.minDomeFee(), deadline, userPrivateKey);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.ClientFeeTooHigh.selector, invalidClientFeeBps, 10000));
+        escrow.pullFee(ORDER_ID, userEoa, orderSize, invalidClientFeeBps, deadline, sig, client);
+    }
+
+    function test_Attack_ZeroPayerAddress() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = new bytes(65);
+
+        vm.prank(operator);
+        vm.expectRevert(DomeFeeEscrow.ZeroAddress.selector);
+        escrow.pullFee(ORDER_ID, address(0), 1_000_000_000, 0, deadline, sig, address(0));
+    }
+
+    function test_Attack_RescueToZeroAddress() public {
+        usdc.mint(address(escrow), 1_000_000);
+
+        vm.prank(admin);
+        vm.expectRevert(DomeFeeEscrow.ZeroAddress.selector);
+        escrow.rescueTokens(address(usdc), address(0), 1_000_000);
+    }
+
+    function test_Attack_RescueZeroAmount() public {
+        usdc.mint(address(escrow), 1_000_000);
+
+        vm.prank(admin);
+        vm.expectRevert(DomeFeeEscrow.ZeroAmount.selector);
+        escrow.rescueTokens(address(usdc), admin, 0);
+    }
+
+    function test_Attack_AddZeroOperator() public {
+        vm.prank(admin);
+        vm.expectRevert(DomeFeeEscrow.ZeroAddress.selector);
+        escrow.addOperator(address(0));
+    }
+
+    function test_Attack_InvalidSignatureLength() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory shortSig = new bytes(64);
+
+        vm.prank(operator);
+        vm.expectRevert(DomeFeeEscrow.InvalidSignatureLength.selector);
+        escrow.pullFee(ORDER_ID, userEoa, 1_000_000_000, 0, deadline, shortSig, address(0));
+    }
+
+    function test_Attack_DistributeToZeroClientGoesDome() public {
+        bytes32 orderId = keccak256("no-client-order");
+        uint256 orderSize = 1_000_000_000;
+        uint256 deadline = block.timestamp + 1 hours;
+        uint256 expectedDomeFee = (orderSize * escrow.domeFeeBps()) / 10000;
+        uint256 clientFeeBps = 10;
+        uint256 expectedClientFee = (orderSize * clientFeeBps) / 10000;
+        uint256 totalFee = expectedDomeFee + expectedClientFee;
+
+        bytes memory sig = _createPermitSignature(userEoa, address(escrow), totalFee, deadline, userPrivateKey);
+
+        vm.prank(operator);
+        escrow.pullFee(orderId, userEoa, orderSize, clientFeeBps, deadline, sig, address(0));
+
+        uint256 domeWalletBefore = usdc.balanceOf(domeWallet);
+
+        vm.prank(operator);
+        escrow.distribute(orderId, expectedDomeFee, expectedClientFee);
+
+        assertEq(usdc.balanceOf(domeWallet), domeWalletBefore + expectedDomeFee + expectedClientFee);
+    }
+
+    function test_Attack_BatchSkipsInvalidOrders() public {
+        bytes32 order1 = keccak256("batch-valid");
+        bytes32 order2 = keccak256("batch-invalid");
+
+        _setupHeldOrder(order1, user, 100_000, 50_000);
+
+        bytes32[] memory orderIds = new bytes32[](2);
+        orderIds[0] = order1;
+        orderIds[1] = order2;
+
+        uint256[] memory domeAmounts = new uint256[](2);
+        domeAmounts[0] = 100_000;
+        domeAmounts[1] = 100_000;
+
+        uint256[] memory clientAmounts = new uint256[](2);
+        clientAmounts[0] = 50_000;
+        clientAmounts[1] = 50_000;
+
+        uint256 domeWalletBefore = usdc.balanceOf(domeWallet);
+
+        vm.prank(operator);
+        escrow.distributeBatch(orderIds, domeAmounts, clientAmounts);
+
+        assertEq(usdc.balanceOf(domeWallet), domeWalletBefore + 100_000);
+        assertEq(uint256(escrow.states(order1)), uint256(DomeFeeEscrow.HoldState.SENT));
+        assertEq(uint256(escrow.states(order2)), uint256(DomeFeeEscrow.HoldState.EMPTY));
+    }
+
+    function test_Attack_BatchSkipsOverDistribution() public {
+        bytes32 order1 = keccak256("batch-skip-over");
+        _setupHeldOrder(order1, user, 100_000, 50_000);
+
+        bytes32[] memory orderIds = new bytes32[](1);
+        orderIds[0] = order1;
+
+        uint256[] memory domeAmounts = new uint256[](1);
+        domeAmounts[0] = 200_000;
+
+        uint256[] memory clientAmounts = new uint256[](1);
+        clientAmounts[0] = 0;
+
+        uint256 domeWalletBefore = usdc.balanceOf(domeWallet);
+
+        vm.prank(operator);
+        escrow.distributeBatch(orderIds, domeAmounts, clientAmounts);
+
+        assertEq(usdc.balanceOf(domeWallet), domeWalletBefore);
+        assertEq(uint256(escrow.states(order1)), uint256(DomeFeeEscrow.HoldState.HELD));
+    }
+
+    function test_Attack_RefundBatchSkipsNonHeld() public {
+        bytes32 order1 = keccak256("refund-batch-valid");
+        bytes32 order2 = keccak256("refund-batch-invalid");
+
+        _setupHeldOrder(order1, user, 100_000, 50_000);
+
+        bytes32[] memory orderIds = new bytes32[](2);
+        orderIds[0] = order1;
+        orderIds[1] = order2;
+
+        uint256 userBefore = usdc.balanceOf(user);
+
+        vm.prank(operator);
+        escrow.refundBatch(orderIds);
+
+        assertEq(usdc.balanceOf(user), userBefore + 150_000);
+    }
+
+    function testFuzz_Attack_ClientFeeMaxBoundary(uint256 clientFeeBps) public {
+        clientFeeBps = bound(clientFeeBps, 10001, type(uint256).max);
+        
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = new bytes(65);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.ClientFeeTooHigh.selector, clientFeeBps, 10000));
+        escrow.pullFee(ORDER_ID, userEoa, 1_000_000_000, clientFeeBps, deadline, sig, client);
+    }
+
+    function testFuzz_Attack_TimingBoundaryOnClaim(uint256 timestamp) public {
+        bytes32 orderId = keccak256(abi.encode("timing-boundary", timestamp));
+        usdc.mint(user, 200_000);
+        _setupHeldOrder(orderId, user, 100_000, 100_000);
+
+        uint256 createdAt = block.timestamp;
+        
+        timestamp = bound(timestamp, createdAt, createdAt + 14 days);
+        vm.warp(timestamp);
+        
+        vm.prank(user);
+        vm.expectRevert();
+        escrow.claim(orderId);
+
+        vm.warp(createdAt + 14 days + 1);
+        
+        vm.prank(user);
+        escrow.claim(orderId);
+        
+        assertEq(uint256(escrow.states(orderId)), uint256(DomeFeeEscrow.HoldState.REFUNDED));
+    }
+
+    function test_Attack_ReentrancyOnDistribute() public {
+        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
+
+        vm.prank(operator);
+        escrow.distribute(ORDER_ID, 100_000, 50_000);
+
+        assertEq(uint256(escrow.states(ORDER_ID)), uint256(DomeFeeEscrow.HoldState.SENT));
+    }
+
+    function test_Attack_ClaimOnRefundedOrder() public {
+        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
+
+        vm.prank(operator);
+        escrow.refund(ORDER_ID);
+
+        vm.warp(block.timestamp + 14 days + 1);
+
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, ORDER_ID));
+        escrow.claim(ORDER_ID);
+    }
+
+    function test_Attack_ClaimOnSentOrder() public {
+        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
+
+        vm.prank(operator);
+        escrow.distribute(ORDER_ID, 100_000, 50_000);
+
+        vm.warp(block.timestamp + 14 days + 1);
+
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, ORDER_ID));
+        escrow.claim(ORDER_ID);
+    }
+
+    function test_Attack_RefundOnEmptyOrder() public {
+        bytes32 emptyOrderId = keccak256("never-created");
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, emptyOrderId));
+        escrow.refund(emptyOrderId);
+    }
+
+    function test_Attack_DistributeOnEmptyOrder() public {
+        bytes32 emptyOrderId = keccak256("never-created");
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, emptyOrderId));
+        escrow.distribute(emptyOrderId, 100, 100);
+    }
+
+    function test_Attack_ClaimOnEmptyOrder() public {
+        bytes32 emptyOrderId = keccak256("never-created");
+
+        vm.warp(block.timestamp + 14 days + 1);
+
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, emptyOrderId));
+        escrow.claim(emptyOrderId);
+    }
 }
