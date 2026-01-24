@@ -1,15 +1,40 @@
-# Remix compiler artifacts
-**/artifacts/
-**/artifacts/**
+# Compiler files
+cache/
+out/
 
-# Remix plugin state folders
-deps/
-states/
+# Ignores development broadcast logs
+!/broadcast
+/broadcast/*/31337/
+/broadcast/**/dry-run/
 
-# Debug info
-*.dbg.json
-*.tsbuildinfo
+# Dependencies
+lib/
 
-# Optional
+# Docs
+docs/
+
+# Dotenv file
 .env
 .env.local
+
+# Coverage
+lcov.info
+coverage/
+
+# Node (if using npm for any tooling)
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Remix artifacts (legacy)
+**/artifacts/
+deps/
+states/
+*.dbg.json
+*.tsbuildinfo
