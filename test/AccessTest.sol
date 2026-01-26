@@ -156,11 +156,6 @@ contract AccessTest is DomeFeeEscrowTest {
         vm.expectRevert();
         escrow.refund(ORDER_ID);
 
-        vm.warp(block.timestamp + 14 days + 1);
-        vm.prank(user);
-        vm.expectRevert();
-        escrow.claim(ORDER_ID);
-
         bytes memory sig = new bytes(65);
         vm.prank(operator);
         vm.expectRevert();
@@ -223,7 +218,7 @@ contract AccessTest is DomeFeeEscrowTest {
         vm.prank(admin);
         escrow.setDomeFeeBps(9999);
 
-        (,, uint256 domeFee,,,,,,,,) = escrow.getEscrowStatus(orderId);
+        (,, uint256 domeFee,,,,,,,) = escrow.getEscrowStatus(orderId);
         assertEq(domeFee, totalFee);
 
         vm.prank(operator);
@@ -251,23 +246,6 @@ contract AccessTest is DomeFeeEscrowTest {
         vm.prank(operator);
         vm.expectRevert();
         escrow.distribute(ORDER_ID, 100_000, 50_000);
-    }
-
-    function test_Attack_ClaimThenOperatorActions() public {
-        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
-
-        vm.warp(block.timestamp + 14 days + 1);
-
-        vm.prank(user);
-        escrow.claim(ORDER_ID);
-
-        vm.prank(operator);
-        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, ORDER_ID));
-        escrow.distribute(ORDER_ID, 100_000, 50_000);
-
-        vm.prank(operator);
-        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, ORDER_ID));
-        escrow.refund(ORDER_ID);
     }
 
     function testFuzz_Attack_RandomAddressCannotOperate(address attacker) public {
@@ -473,28 +451,6 @@ contract AccessTest is DomeFeeEscrowTest {
         escrow.pullFee(ORDER_ID, userEoa, 1_000_000_000, clientFeeBps, deadline, sig, client);
     }
 
-    function testFuzz_Attack_TimingBoundaryOnClaim(uint256 timestamp) public {
-        bytes32 orderId = keccak256(abi.encode("timing-boundary", timestamp));
-        usdc.mint(user, 200_000);
-        _setupHeldOrder(orderId, user, 100_000, 100_000);
-
-        uint256 createdAt = block.timestamp;
-        
-        timestamp = bound(timestamp, createdAt, createdAt + 14 days);
-        vm.warp(timestamp);
-        
-        vm.prank(user);
-        vm.expectRevert();
-        escrow.claim(orderId);
-
-        vm.warp(createdAt + 14 days + 1);
-        
-        vm.prank(user);
-        escrow.claim(orderId);
-        
-        assertEq(uint256(escrow.states(orderId)), uint256(DomeFeeEscrow.HoldState.REFUNDED));
-    }
-
     function test_Attack_ReentrancyOnDistribute() public {
         _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
 
@@ -502,32 +458,6 @@ contract AccessTest is DomeFeeEscrowTest {
         escrow.distribute(ORDER_ID, 100_000, 50_000);
 
         assertEq(uint256(escrow.states(ORDER_ID)), uint256(DomeFeeEscrow.HoldState.SENT));
-    }
-
-    function test_Attack_ClaimOnRefundedOrder() public {
-        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
-
-        vm.prank(operator);
-        escrow.refund(ORDER_ID);
-
-        vm.warp(block.timestamp + 14 days + 1);
-
-        vm.prank(user);
-        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, ORDER_ID));
-        escrow.claim(ORDER_ID);
-    }
-
-    function test_Attack_ClaimOnSentOrder() public {
-        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
-
-        vm.prank(operator);
-        escrow.distribute(ORDER_ID, 100_000, 50_000);
-
-        vm.warp(block.timestamp + 14 days + 1);
-
-        vm.prank(user);
-        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, ORDER_ID));
-        escrow.claim(ORDER_ID);
     }
 
     function test_Attack_RefundOnEmptyOrder() public {
@@ -544,15 +474,5 @@ contract AccessTest is DomeFeeEscrowTest {
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, emptyOrderId));
         escrow.distribute(emptyOrderId, 100, 100);
-    }
-
-    function test_Attack_ClaimOnEmptyOrder() public {
-        bytes32 emptyOrderId = keccak256("never-created");
-
-        vm.warp(block.timestamp + 14 days + 1);
-
-        vm.prank(user);
-        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotHeld.selector, emptyOrderId));
-        escrow.claim(emptyOrderId);
     }
 }

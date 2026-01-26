@@ -83,7 +83,6 @@ contract DomeFeeEscrowTest is Test {
     event FeeHeld(bytes32 indexed orderId, address indexed payer, address indexed client, uint256 totalAmount, uint256 domeFee, uint256 clientFee, bool isSmartWallet);
     event FeeDistributed(bytes32 indexed orderId, uint256 domeAmount, uint256 clientAmount);
     event FeeReturned(bytes32 indexed orderId, address indexed payer, uint256 amount);
-    event PayerClaimed(bytes32 indexed orderId, address indexed payer, uint256 amount);
     event DomeWalletSet(address indexed oldWallet, address indexed newWallet);
     event DomeFeeBpsSet(uint256 oldBps, uint256 newBps);
     event MinDomeFeeSet(uint256 oldMin, uint256 newMin);
@@ -210,42 +209,6 @@ contract DomeFeeEscrowTest is Test {
 
         assertEq(usdc.balanceOf(user), userBefore + 75_000);
         assertEq(uint256(escrow.states(ORDER_ID)), uint256(DomeFeeEscrow.HoldState.REFUNDED));
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // Claim Tests (User Escape Hatch)
-    // ═══════════════════════════════════════════════════════════════════════
-
-    function test_Claim_AfterTimeout() public {
-        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
-
-        vm.warp(block.timestamp + 14 days + 1);
-
-        uint256 userBefore = usdc.balanceOf(user);
-
-        vm.prank(user);
-        escrow.claim(ORDER_ID);
-
-        assertEq(usdc.balanceOf(user), userBefore + 150_000);
-        assertEq(uint256(escrow.states(ORDER_ID)), uint256(DomeFeeEscrow.HoldState.REFUNDED));
-    }
-
-    function test_Claim_RevertNotYetClaimable() public {
-        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
-
-        vm.prank(user);
-        vm.expectRevert();
-        escrow.claim(ORDER_ID);
-    }
-
-    function test_Claim_RevertNotPayer() public {
-        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
-
-        vm.warp(block.timestamp + 14 days + 1);
-
-        vm.prank(address(999));
-        vm.expectRevert(abi.encodeWithSelector(DomeFeeEscrow.NotPayer.selector, address(999), user));
-        escrow.claim(ORDER_ID);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -410,8 +373,7 @@ contract DomeFeeEscrowTest is Test {
             uint256 domeRemaining,
             uint256 clientRemaining,
             uint256 timestamp,
-            DomeFeeEscrow.HoldState state,
-            uint256 timeUntilClaim
+            DomeFeeEscrow.HoldState state
         ) = escrow.getEscrowStatus(ORDER_ID);
 
         assertEq(payer, user);
@@ -424,22 +386,6 @@ contract DomeFeeEscrowTest is Test {
         assertEq(clientRemaining, 50_000);
         assertGt(timestamp, 0);
         assertEq(uint256(state), uint256(DomeFeeEscrow.HoldState.HELD));
-        assertGt(timeUntilClaim, 0);
-    }
-
-    function test_IsClaimable() public {
-        _setupHeldOrder(ORDER_ID, user, 100_000, 50_000);
-
-        assertFalse(escrow.isClaimable(ORDER_ID));
-
-        vm.warp(block.timestamp + 14 days + 1);
-
-        assertTrue(escrow.isClaimable(ORDER_ID));
-    }
-
-    function test_IsSmartWallet() public view {
-        assertFalse(escrow.isSmartWallet(user)); // EOA
-        assertTrue(escrow.isSmartWallet(address(escrow))); // Contract
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -577,7 +523,7 @@ contract DomeFeeEscrowTest is Test {
             assertEq(uint256(escrow.states(orderId)), uint256(DomeFeeEscrow.HoldState.HELD));
         }
 
-        (,,,,uint256 domeDistributed, uint256 clientDistributed,,,,,) = escrow.getEscrowStatus(orderId);
+        (,,,,uint256 domeDistributed, uint256 clientDistributed,,,,) = escrow.getEscrowStatus(orderId);
         uint256 domeRemaining = domeFee - domeDistributed;
         uint256 clientRemaining = clientFee - clientDistributed;
 
@@ -638,30 +584,6 @@ contract DomeFeeEscrowTest is Test {
         
         if (orderSize >= 100_000_000) {
             assertTrue(expectedDomeFee >= minFee);
-        }
-    }
-
-    /**
-     * @notice Fuzz test: claim only works after timeout
-     */
-    function testFuzz_Claim_OnlyAfterTimeout(uint256 timeElapsed) public {
-        timeElapsed = bound(timeElapsed, 0, 30 days);
-
-        bytes32 orderId = keccak256(abi.encode("fuzz-claim", timeElapsed));
-        usdc.mint(user, 200_000);
-        _setupHeldOrder(orderId, user, 100_000, 100_000);
-
-        vm.warp(block.timestamp + timeElapsed);
-
-        if (timeElapsed <= 14 days) {
-            vm.prank(user);
-            vm.expectRevert();
-            escrow.claim(orderId);
-        } else {
-            uint256 userBefore = usdc.balanceOf(user);
-            vm.prank(user);
-            escrow.claim(orderId);
-            assertEq(usdc.balanceOf(user), userBefore + 200_000);
         }
     }
 
@@ -761,7 +683,7 @@ contract DomeFeeEscrowTest is Test {
         assertEq(usdc.balanceOf(userEoa), userBalanceBefore - totalFee);
         assertEq(escrow.totalHeld(), totalFee);
 
-        (address payer,, uint256 domeFee, uint256 clientFee,,,,,,,) = escrow.getEscrowStatus(orderId);
+        (address payer,, uint256 domeFee, uint256 clientFee,,,,,,) = escrow.getEscrowStatus(orderId);
         assertEq(payer, userEoa);
         assertEq(domeFee, expectedDomeFee);
         assertEq(clientFee, expectedClientFee);
@@ -829,7 +751,7 @@ contract DomeFeeEscrowTest is Test {
         vm.prank(operator);
         escrow.pullFee(orderId, userEoa, orderSize, 0, deadline, sig, address(0));
 
-        (,, uint256 domeFee,,,,,,,,) = escrow.getEscrowStatus(orderId);
+        (,, uint256 domeFee,,,,,,,) = escrow.getEscrowStatus(orderId);
         assertEq(domeFee, escrow.minDomeFee());
     }
 
@@ -875,7 +797,7 @@ contract DomeFeeEscrowTest is Test {
         vm.prank(operator);
         escrow.pullFee(orderId, userEoa, orderSize, clientFeeBps, deadline, sig, client);
 
-        (address payer, address storedClient, uint256 domeFee, uint256 clientFee,,,,,,,) = escrow.getEscrowStatus(orderId);
+        (address payer, address storedClient, uint256 domeFee, uint256 clientFee,,,,,,) = escrow.getEscrowStatus(orderId);
         assertEq(payer, userEoa);
         assertEq(domeFee, expectedDomeFee);
         assertEq(clientFee, expectedClientFee);

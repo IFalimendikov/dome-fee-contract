@@ -29,24 +29,55 @@ Single `pullFee()` works seamlessly with all wallet types:
 
 ### Key Features
 - **State Machine**: `EMPTY → HELD → SENT/REFUNDED`
-- **User Protection**: 14-day timeout escape hatch for unresponsive operator
 - **Access Control**: `OPERATOR` (daily operations) + `ADMIN` (configuration)
 - **Batch Operations**: Efficient multi-order distribution and refunds
 
-## Project Structure
+## Fee Escrow Flow
 
 ```
-dome-fee-contract/
-├── contracts/
-│   └── DomeFeeEscrow.sol    # Main escrow contract
-├── test/
-│   └── DomeFeeEscrow.t.sol  # Foundry test suite
-├── scripts/
-│   └── Deploy.s.sol         # Deployment script
-├── foundry.toml             # Foundry configuration
-├── remappings.txt           # Import remappings
-├── README.md
-└── LICENSE
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           FEE ESCROW LIFECYCLE                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+   ┌──────────┐      pullFee()       ┌──────────┐
+   │  EMPTY   │ ───────────────────► │   HELD   │
+   └──────────┘                      └────┬─────┘
+                                          │
+                    ┌─────────────────────┼─────────────────────┐
+                    │                     │                     │
+                    ▼                     ▼                     ▼
+           distribute()           distribute()            refund()
+          (partial fill)          (full fill)           (cancelled)
+                    │                     │                     │
+                    ▼                     ▼                     ▼
+              ┌──────────┐          ┌──────────┐          ┌──────────┐
+              │   HELD   │          │   SENT   │          │ REFUNDED │
+              │ (partial)│          │  (done)  │          │  (done)  │
+              └──────────┘          └──────────┘          └──────────┘
+```
+
+### 1. Fee Collection (`pullFee`)
+- Operator calls `pullFee()` with order details and user signature
+- Fees calculated: `domeFee` (% of order + min floor) + `clientFee` (affiliate %)
+- EOA wallets: Uses EIP-2612 permit for gasless approval
+- Smart wallets: Uses EIP-1271 signature + prior `approve()`
+- State: `EMPTY → HELD`
+
+### 2. Fee Distribution (`distribute`)
+- Called on order fills (partial or full)
+- Sends proportional amounts to Dome wallet and client/affiliate
+- Supports partial fills - tracks distributed vs remaining
+- State: `HELD → SENT` (when fully distributed)
+
+### 3. Fee Refund (`refund`)
+- Called when order is cancelled or expires unfilled
+- Returns remaining escrowed amount to original payer
+- State: `HELD → REFUNDED`
+
+### Batch Operations
+- `distributeBatch()`: Process multiple order distributions efficiently
+- `refundBatch()`: Refund multiple cancelled orders in one transaction
+
 ```
 
 ## Getting Started
@@ -73,20 +104,10 @@ forge build
 ### Running Tests
 
 ```bash
-# Run all tests
-forge test
 
 # Run tests with verbosity
 forge test -vvv
 
-# Run specific test
-forge test --match-test testDistribute
-
-# Run tests with gas report
-forge test --gas-report
-
-# Run coverage
-forge coverage
 ```
 
 ### Deployment
@@ -110,108 +131,6 @@ forge coverage
 
 ## Contract API
 
-### Core Functions
-
-#### `pullFee`
-Pull fee from user - auto-detects EOA vs Smart Wallet.
-
-```solidity
-function pullFee(
-    bytes32 orderId,
-    address payer,
-    uint256 orderSize,
-    uint256 clientFeeBps,
-    uint256 deadline,
-    bytes calldata signature,
-    address client
-) external
-```
-
-#### `distribute`
-Distribute fee on order fill (partial or full).
-
-```solidity
-function distribute(
-    bytes32 orderId,
-    uint256 domeAmount,
-    uint256 clientAmount
-) external
-```
-
-#### `refund`
-Refund remaining fee to payer (order cancelled/expired).
-
-```solidity
-function refund(bytes32 orderId) external
-```
-
-#### `claim`
-User can claim remaining refund after 14-day timeout if operator is unresponsive.
-
-```solidity
-function claim(bytes32 orderId) external
-```
-
-### Batch Operations
-
-```solidity
-function distributeBatch(
-    bytes32[] calldata orderIds,
-    uint256[] calldata domeAmounts,
-    uint256[] calldata clientAmounts
-) external
-
-function refundBatch(bytes32[] calldata orderIds) external
-```
-
-### Admin Functions
-
-| Function | Description |
-|----------|-------------|
-| `setDomeWallet(address)` | Update Dome wallet address |
-| `setDomeFeeBps(uint256)` | Update Dome fee basis points |
-| `setMinDomeFee(uint256)` | Update minimum Dome fee floor |
-| `addOperator(address)` | Add an operator address |
-| `removeOperator(address)` | Remove an operator address |
-| `pause()` / `unpause()` | Emergency controls |
-| `rescueTokens(...)` | Rescue stuck tokens |
-
-### View Functions
-
-```solidity
-// Get full escrow status for an order
-function getEscrowStatus(bytes32 orderId) external view returns (...)
-
-// Check if order can be claimed by user after timeout
-function isClaimable(bytes32 orderId) external view returns (bool)
-
-// Check if address is a smart wallet (contract)
-function isSmartWallet(address account) external view returns (bool)
-
-// Build the hash that smart wallets need to sign
-function buildAuthHash(...) external view returns (bytes32)
-
-// Calculate fees for given order size (useful for frontend preview)
-function calculateFee(
-    uint256 orderSize,
-    uint256 clientFeeBps
-) external view returns (uint256 domeFee, uint256 clientFee, uint256 totalFee)
-
-// Get EIP-712 domain separator
-function DOMAIN_SEPARATOR() external view returns (bytes32)
-```
-
-## Configuration
-
-### Constants
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `ESCROW_TIMEOUT` | 14 days | Time after which user can withdraw |
-| `MAX_CLIENT_FEE_BPS` | 10000 | Maximum client fee (100%) |
-| `DEFAULT_DOME_FEE_BPS` | 10 | Default Dome fee (0.1%) |
-| `DEFAULT_MIN_DOME_FEE` | 10,000 | $0.01 with 6 decimals |
-
 ### Roles
 
 | Role | Permissions |
@@ -227,7 +146,6 @@ function DOMAIN_SEPARATOR() external view returns (bytes32)
 - Pausable for emergency stops
 - Role-based access control
 - EIP-712 typed data signing
-- 14-day user escape hatch
 
 ## License
 

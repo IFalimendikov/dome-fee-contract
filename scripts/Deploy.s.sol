@@ -46,8 +46,7 @@ contract Deploy is Script {
         console.log("Post-deployment checklist:");
         console.log("  1. Verify contract on block explorer");
         console.log("  2. Add operator addresses via addOperator()");
-        console.log("  3. Review default fee settings (0.1%, min $0.01)");
-        console.log("  4. Update backend with contract address");
+        console.log("  3. Update backend with contract address");
     }
 }
 

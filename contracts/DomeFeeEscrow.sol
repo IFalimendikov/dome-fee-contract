@@ -37,9 +37,6 @@ pragma solidity ^0.8.24;
          State Machine
          • EMPTY → HELD → SENT/REFUNDED
 
-         User Protection
-         • 14-day timeout escape hatch for unresponsive operator
-
          Access Control
          • OPERATOR (daily operations) + ADMIN (configuration)
 
@@ -76,7 +73,6 @@ contract DomeFeeEscrow is
     event FeeHeld(bytes32 indexed orderId, address indexed payer, address indexed client, uint256 totalAmount, uint256 domeFee, uint256 clientFee, bool isSmartWallet);
     event FeeDistributed(bytes32 indexed orderId, uint256 domeAmount, uint256 clientAmount);
     event FeeReturned(bytes32 indexed orderId, address indexed payer, uint256 amount);
-    event PayerClaimed(bytes32 indexed orderId, address indexed payer, uint256 amount);
     event DomeWalletSet(address indexed oldWallet, address indexed newWallet);
     event DomeFeeBpsSet(uint256 oldBps, uint256 newBps);
     event MinDomeFeeSet(uint256 oldMin, uint256 newMin);
@@ -92,7 +88,6 @@ contract DomeFeeEscrow is
     error OrderExists(bytes32 orderId);
     error OrderNotFound(bytes32 orderId);
     error NotHeld(bytes32 orderId);
-    error NotYetClaimable(bytes32 orderId, uint256 releaseAfter, uint256 currentTime);
     error ArrayLengthMismatch();
     error NotPayer(address caller, address payer);
     error InvalidSignature();
@@ -136,9 +131,6 @@ contract DomeFeeEscrow is
     bytes32 public constant FEE_AUTH_TYPEHASH = keccak256(
         "FeeAuth(bytes32 orderId,address payer,uint256 amount,uint256 deadline)"
     );
-    
-    /// @notice Time after which user can withdraw without operator (14 days)
-    uint256 public constant ESCROW_TIMEOUT = 14 days;
     
     /// @notice Maximum client fee bps (100% = 10000 bps)
     uint256 public constant MAX_CLIENT_FEE_BPS = 10000;
@@ -489,42 +481,6 @@ contract DomeFeeEscrow is
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // User Functions
-    // ────────────────────────────────────────────────────────────────────────
-
-    /**
-     * @notice User can claim remaining refund after timeout if operator unresponsive
-     */
-    function claim(bytes32 orderId) 
-        external 
-        nonReentrant 
-        whenNotPaused
-        requireHeld(orderId)
-    {
-        EscrowData storage data = escrows[orderId];
-        
-        if (msg.sender != data.payer) revert NotPayer(msg.sender, data.payer);
-        
-        uint256 releaseAfter = data.timestamp + ESCROW_TIMEOUT;
-        if (block.timestamp <= releaseAfter) {
-            revert NotYetClaimable(orderId, releaseAfter, block.timestamp);
-        }
-        
-        uint256 domeRemaining = data.domeFee - data.domeDistributed;
-        uint256 clientRemaining = data.clientFee - data.clientDistributed;
-        uint256 totalRemaining = domeRemaining + clientRemaining;
-        
-        states[orderId] = HoldState.REFUNDED;
-        totalHeld -= totalRemaining;
-        
-        if (totalRemaining > 0) {
-            TOKEN.safeTransfer(msg.sender, totalRemaining);
-        }
-        
-        emit PayerClaimed(orderId, msg.sender, totalRemaining);
-    }
-
-    // ────────────────────────────────────────────────────────────────────────
     // Admin - Configuration
     // ────────────────────────────────────────────────────────────────────────
 
@@ -648,8 +604,7 @@ contract DomeFeeEscrow is
         uint256 domeRemaining,
         uint256 clientRemaining,
         uint256 timestamp,
-        HoldState state,
-        uint256 timeUntilClaim
+        HoldState state
     ) {
         EscrowData storage data = escrows[orderId];
         payer = data.payer;
@@ -662,18 +617,6 @@ contract DomeFeeEscrow is
         clientRemaining = data.clientFee - data.clientDistributed;
         timestamp = data.timestamp;
         state = states[orderId];
-        
-        uint256 claimAfter = data.timestamp + ESCROW_TIMEOUT;
-        timeUntilClaim = block.timestamp >= claimAfter ? 0 : claimAfter - block.timestamp;
-    }
-
-    /**
-     * @notice Check if order can be claimed by user
-     */
-    function isClaimable(bytes32 orderId) external view returns (bool) {
-        if (states[orderId] != HoldState.HELD) return false;
-        EscrowData storage data = escrows[orderId];
-        return block.timestamp > data.timestamp + ESCROW_TIMEOUT;
     }
 
     /**
