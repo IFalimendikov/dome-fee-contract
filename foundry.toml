@@ -29,4 +29,8 @@ fuzz = { runs = 32 }
 invariant = { runs = 32 }
 optimizer = false
 
+# Etherscan API V2 configuration
+[etherscan]
+polygon = { key = "${POLYGONSCAN_API_KEY}", url = "https://api.etherscan.io/v2/api?chainid=137" }
+
 # See more config options https://github.com/foundry-rs/foundry/tree/master/config
